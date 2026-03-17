@@ -2,45 +2,54 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import yfinance as yf
-from datetime import datetime, timedelta
+import requests
+from datetime import datetime
 
 # --- 页面配置 ---
 st.set_page_config(page_title="calbtc.com | 智能共振雷达", layout="wide")
 
-# --- 数据引擎 (使用 yfinance 绕过区域限制) ---
+# --- 数据引擎 (使用 CryptoCompare 绕过区域限制) ---
 class CalBTCEngine:
     def __init__(self, interval='1d'):
-        self.symbol = "BTC-USD"
-        # 映射币安周期到 yfinance 周期
-        mapping = {'1h': '1h', '4h': '1h', '1d': '1d', '1w': '1wk'}
-        self.interval = mapping.get(interval, '1d')
+        self.interval = interval
 
     def fetch_data(self):
         try:
-            # 获取最近 200 天的数据
-            ticker = yf.Ticker(self.symbol)
-            df = ticker.history(period="max", interval=self.interval).tail(200)
-            if df.empty: return None
-            df = df.reset_index()
-            # 统一列名
-            df.columns = [c.lower() for c in df.columns]
-            df = df.rename(columns={'date': 'time', 'datetime': 'time'})
-            return df
+            # 映射周期
+            limit = 200
+            if self.interval == '1h':
+                url = f"https://min-api.cryptocompare.com/data/v2/histohour?fsym=BTC&tsym=USD&limit={limit}"
+            elif self.interval == '1d':
+                url = f"https://min-api.cryptocompare.com/data/v2/histoday?fsym=BTC&tsym=USD&limit={limit}"
+            else: # 1w
+                url = f"https://min-api.cryptocompare.com/data/v2/histoday?fsym=BTC&tsym=USD&limit={limit}"
+                
+            response = requests.get(url, timeout=10)
+            data = response.json()
+            
+            if data['Response'] == 'Success':
+                df = pd.DataFrame(data['Data']['Data'])
+                df['time'] = pd.to_datetime(df['time'], unit='s')
+                # 统一列名以适配逻辑
+                df = df.rename(columns={'volumefrom': 'vol'})
+                return df
+            else:
+                st.error(f"📡 API 报错: {data.get('Message')}")
+                return None
         except Exception as e:
-            st.error(f"📡 行情获取失败。原因: {e}")
+            st.error(f"📡 数据抓取失败。原因: {e}")
             return None
 
     def get_analysis(self, df):
-        if df is None: return None
+        if df is None or df.empty: return None
         cur_p = df['close'].iloc[-1]
         
-        # 1. Pivot Points (昨日)
+        # 1. Pivot Points
         last = df.iloc[-2]
         p = (last['high'] + last['low'] + last['close']) / 3
         r1, s1 = 2*p - last['low'], 2*p - last['high']
         
-        # 2. Fibonacci (200周期波段)
+        # 2. Fibonacci (200周期)
         swing_h, swing_l = df['high'].max(), df['low'].min()
         fib_618 = swing_l + (swing_h - swing_l) * 0.618
         
@@ -52,7 +61,7 @@ class CalBTCEngine:
         
         # 5. 筹码密集区 (POC)
         price_bins = pd.cut(df['close'], bins=20)
-        poc_zone = df.groupby(price_bins, observed=True)['volume'].sum().idxmax()
+        poc_zone = df.groupby(price_bins, observed=True)['vol'].sum().idxmax()
         poc_price = (poc_zone.left + poc_zone.right) / 2
         
         return {
@@ -67,8 +76,8 @@ class CalBTCEngine:
 
 # --- 界面交互 ---
 st.sidebar.header("calbtc 控制面板")
-period = st.sidebar.selectbox("选择分析周期", ['1h', '1d', '1w'], index=1)
-st.sidebar.info("提示：calbtc 通过雅虎财经镜像获取数据，绕过区域访问限制。")
+period = st.sidebar.selectbox("选择分析周期", ['1h', '1d'], index=1)
+st.sidebar.info("提示：calbtc 已切换至加密原生聚合数据源，确保全地域稳定访问。")
 
 st.title("🛡️ calbtc 智能监控引擎")
 
@@ -100,11 +109,11 @@ if df is not None:
         st.write("### 🔍 kudle 智能诊断")
         hits = [name for name, val in analysis.items() if abs(val - cur_p) / cur_p < 0.015]
         if len(hits) >= 2:
-            st.error(f"⚠️ **检测到强共振区域**\n\n当前价格正处于 **{' & '.join(hits)}** 的影响区。")
+            st.error(f"⚠️ **强共振区确认**：价格正处于 {' & '.join(hits)} 的影响区。")
         else:
             st.success("✨ 市场目前指标分布平稳。")
         
         st.divider()
         st.markdown("**5 维度量化模型：** Pivot, Fibonacci, MA99, Psych, POC")
 
-st.caption(f"© 2026 calbtc.com | 数据源：Yahoo Finance | 更新：{datetime.now().strftime('%H:%M:%S')}")
+st.caption(f"© 2026 calbtc.com | 数据源：CryptoCompare | 更新：{datetime.now().strftime('%H:%M:%S')}")
